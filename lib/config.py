@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-import logging
+import os
 
 # =========================
 # CONFIG: FOLDERS & LOGGING
@@ -11,6 +11,7 @@ PHOTOS_DIR = BASE_DIR / "photos" # destination library (used for logs only)
 TEMP_ROOT = DATA_DIR / ".tmp_extracted" # persistent extraction root (never deleted)
 
 DB_PATH = PHOTOS_DIR / ".photo_dedupe.sqlite"
+UNDATED_DIR = PHOTOS_DIR / "_undated"  # where files without reliable dates are placed
 
 # =========================
 # FILE TYPE FILTERS
@@ -25,3 +26,14 @@ VIDEO_EXT = {
 MEDIA_EXT = IMAGE_EXT | VIDEO_EXT
 
 ARCHIVE_SUFFIXES = ('.zip', '.tar', '.tgz', '.tar.gz')
+
+# =========================
+# PERFORMANCE / PARALLELISM
+# =========================
+_CPUS = os.cpu_count() or 4
+# Max concurrent archives to extract in parallel (bounded by number of archives)
+MAX_ARCHIVE_WORKERS = max(1, min(24, _CPUS * 2))
+# Max workers within a single large zip to extract members in parallel
+MAX_WITHIN_ARCHIVE_WORKERS = max(1, min(24, _CPUS * 2))
+# Minimum number of entries in a zip to trigger within-archive parallel extraction
+PARALLEL_MIN_FILES = 32
