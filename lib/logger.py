@@ -4,7 +4,7 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from lib.config import DATA_DIR, PHOTOS_DIR, TEMP_ROOT, BASE_DIR
 
-_LOG_FILE = PHOTOS_DIR / ".log"
+_LOG_FILE = BASE_DIR / ".log"
 _LOG_LEVEL = logging.INFO
 
 def setup_logging():

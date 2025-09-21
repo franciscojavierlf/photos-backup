@@ -11,40 +11,6 @@ from lib.config import MEDIA_EXT, TEMP_ROOT, PHOTOS_DIR, DB_PATH, UNDATED_DIR, D
 
 _HASH_CHUNK = 8 * 1024 * 1024  # 8 MB for faster hashing on large files
 
-def _metadata_candidates(p: Path) -> list[Path]:
-    base_candidates = [
-        p.with_suffix(p.suffix + '.json'),
-        p.with_suffix('.json'),
-        p.with_suffix(p.suffix + '.supplemental-metadata.json'),
-        p.with_suffix(p.suffix + '.suppl.json'),
-    ]
-    # Also consider duplicated download variants like filename.jpg(1).json etc.
-    variants: list[Path] = []
-    for sc in base_candidates:
-        variants.append(sc)
-        # Insert (1) before final .json
-        if sc.suffix.lower() == '.json':
-            name_no_ext = sc.stem  # e.g., filename.jpg or filename
-            parent = sc.parent
-            variants.append(parent / f"{name_no_ext}(1).json")
-        # Insert (1) before .supplemental-metadata.json or .suppl.json
-        if sc.name.endswith('.supplemental-metadata.json'):
-            stem_for_ins = sc.name[:-len('.json')]
-            variants.append(sc.parent / f"{stem_for_ins}(1).json")
-        if sc.name.endswith('.suppl.json'):
-            stem_for_ins = sc.name[:-len('.json')]
-            variants.append(sc.parent / f"{stem_for_ins}(1).json")
-    # Remove duplicates while preserving order
-    seen = set()
-    uniq: list[Path] = []
-    for x in variants:
-        key = x.as_posix()
-        if key not in seen:
-            seen.add(key)
-            uniq.append(x)
-    return uniq
-
-
 def sort_media():
     """ Moves all the temp files into the photos by sorting them. """
     conn = _ensure_db(DB_PATH)
@@ -83,6 +49,40 @@ def reindex_library(lib_dir: Path):
             errors += 1
     conn.commit()
     logging.info(f"[REINDEX] done. indexed={added} errors={errors}")
+
+
+def _metadata_candidates(p: Path) -> list[Path]:
+    base_candidates = [
+        p.with_suffix(p.suffix + '.json'),
+        p.with_suffix('.json'),
+        p.with_suffix(p.suffix + '.supplemental-metadata.json'),
+        p.with_suffix(p.suffix + '.suppl.json'),
+    ]
+    # Also consider duplicated download variants like filename.jpg(1).json etc.
+    variants: list[Path] = []
+    for sc in base_candidates:
+        variants.append(sc)
+        # Insert (1) before final .json
+        if sc.suffix.lower() == '.json':
+            name_no_ext = sc.stem  # e.g., filename.jpg or filename
+            parent = sc.parent
+            variants.append(parent / f"{name_no_ext}(1).json")
+        # Insert (1) before .supplemental-metadata.json or .suppl.json
+        if sc.name.endswith('.supplemental-metadata.json'):
+            stem_for_ins = sc.name[:-len('.json')]
+            variants.append(sc.parent / f"{stem_for_ins}(1).json")
+        if sc.name.endswith('.suppl.json'):
+            stem_for_ins = sc.name[:-len('.json')]
+            variants.append(sc.parent / f"{stem_for_ins}(1).json")
+    # Remove duplicates while preserving order
+    seen = set()
+    uniq: list[Path] = []
+    for x in variants:
+        key = x.as_posix()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(x)
+    return uniq
 
 
 def _sha256_file(p: Path) -> str:

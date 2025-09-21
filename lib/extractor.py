@@ -157,7 +157,8 @@ def _safe_extract_zip_resumable(zf: zipfile.ZipFile, dest_dir: Path, names: Iter
 
 
 def _extract_members_parallel(archive: Path, dest_dir: Path, names: list[str], dest_root: str, workers: int) -> tuple[int, int, int, int]:
-    """Extract a list of member names from one zip archive in parallel.
+    """
+    Extract a list of member names from one zip archive in parallel.
     Each worker opens its own ZipFile handle and processes a disjoint subset.
     Returns a tuple: (wrote_total, wrote_media, wrote_sidecar, skipped_existing).
     """
