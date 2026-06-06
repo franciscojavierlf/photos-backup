@@ -6,8 +6,9 @@ import os
 # CONFIG: FOLDERS & LOGGING
 # =========================
 BASE_DIR = Path(sys.argv[0]).parent.resolve() # Assumes we run main.py
-DATA_DIR = BASE_DIR / "datatest" # put your Takeout archives here
+DATA_DIR = BASE_DIR / "data" # put your Takeout archives here
 PHOTOS_DIR = BASE_DIR / "photos" # destination library (used for logs only)
+LOGS_DIR = BASE_DIR / "logs"
 TEMP_ROOT = DATA_DIR / ".tmp_extracted" # persistent extraction root (never deleted)
 
 DB_PATH = PHOTOS_DIR / ".photo_dedupe.sqlite"

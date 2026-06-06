@@ -25,12 +25,12 @@ def sort_media():
         logging.warning(f"[CLEAN] prune failed for {DATA_DIR.name}: {e}")
 
 
-def reindex_library(lib_dir: Path):
+def reindex_library():
     """ Recreates the sqlite db with the current photos folder. """
     conn = _ensure_db(DB_PATH)
-    logging.info(f"[REINDEX] scanning {lib_dir.name}")
+    logging.info(f"[REINDEX] scanning {PHOTOS_DIR.name}")
     added, errors = 0, 0
-    for p in lib_dir.rglob('*'):
+    for p in PHOTOS_DIR.rglob('*'):
         if not p.is_file():
             continue
         if p.suffix.lower() not in MEDIA_EXT:

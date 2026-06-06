@@ -9,7 +9,6 @@ from lib.config import TEMP_ROOT, MEDIA_EXT, DATA_DIR, ARCHIVE_SUFFIXES, MAX_ARC
 
 _COPY_CHUNK = 8 * 1024 * 1024  # 8 MB chunk for faster extraction I/O
 
-
 def _is_media(name: str) -> bool:
     lower = name.lower()
     _, ext = os.path.splitext(lower)
