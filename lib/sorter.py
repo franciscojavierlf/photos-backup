@@ -96,7 +96,7 @@ def metadata_candidate_names(name: str) -> list[str]:
         filename = os.path.basename(candidate)
 
         if filename.endswith(".json"):
-            variants.append(os.path.join(dirname, f"{filename[:-5]}(1).json") if dirname else f"{filename[:-5]}(1).json")
+            variants.append(os.path.join(dirname, f"{filename[:-5]}(1).json") if dirname else f"{filename[:-5]}(1).json"))
 
     seen = set()
     uniq: list[str] = []
@@ -117,6 +117,7 @@ def import_media_file(
     *,
     sidecar_path: Path | None = None,
     sidecar_bytes: bytes | None = None,
+    sidecar_bytes_candidates: list[bytes] | None = None,
     lib_dir: Path = PHOTOS_DIR,
 ) -> str:
     h = _sha256_file(src)
@@ -130,7 +131,12 @@ def import_media_file(
         _cleanup_staged_media(src, sidecar_path=sidecar_path)
         return "duplicate"
 
-    dt, reliable = _best_datetime_for_file(src, sidecar_path=sidecar_path, sidecar_bytes=sidecar_bytes)
+    dt, reliable = _best_datetime_for_file(
+        src,
+        sidecar_path=sidecar_path,
+        sidecar_bytes=sidecar_bytes,
+        sidecar_bytes_candidates=sidecar_bytes_candidates,
+    )
     dest_dir = _destination_dir(lib_dir, dt, reliable)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_media = _unique_dest(dest_dir, src.name)
@@ -209,9 +215,16 @@ def _best_datetime_for_file(
     *,
     sidecar_path: Path | None = None,
     sidecar_bytes: bytes | None = None,
+    sidecar_bytes_candidates: list[bytes] | None = None,
 ):
+    inline_candidates: list[bytes] = []
     if sidecar_bytes is not None:
-        dt = _load_takeout_timestamp_bytes(sidecar_bytes)
+        inline_candidates.append(sidecar_bytes)
+    if sidecar_bytes_candidates:
+        inline_candidates.extend(sidecar_bytes_candidates)
+
+    for inline_sidecar in inline_candidates:
+        dt = _load_takeout_timestamp_bytes(inline_sidecar)
         if dt:
             return dt, True
 
