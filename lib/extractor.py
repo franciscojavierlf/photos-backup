@@ -85,12 +85,8 @@ def _extract_one_archive(conn, archive: Path) -> bool:
             for info in media_infos:
                 try:
                     staged_media = _stage_member(zf, info, stage_dir)
-                    sidecar_bytes_candidates = _read_sidecar_bytes_candidates(zf, info.filename, info_by_name)
-                    result = sorter.import_media_file(
-                        conn,
-                        staged_media,
-                        sidecar_bytes_candidates=sidecar_bytes_candidates,
-                    )
+                    _stage_sidecar_candidates(zf, info.filename, info_by_name, stage_dir)
+                    result = sorter.import_media_file(conn, staged_media)
                     if result == "added":
                         added += 1
                     elif result == "duplicate":
@@ -144,21 +140,22 @@ def _stage_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, stage_dir: Path) -
     return target
 
 
-def _read_sidecar_bytes_candidates(
+def _stage_sidecar_candidates(
     zf: zipfile.ZipFile,
     media_name: str,
     info_by_name: dict[str, zipfile.ZipInfo],
-) -> list[bytes]:
-    sidecars: list[bytes] = []
+    stage_dir: Path,
+) -> int:
+    staged = 0
     for candidate in sorter.metadata_candidate_names(media_name):
         info = info_by_name.get(candidate)
         if info is None:
             continue
         if not _is_sidecar_json(info.filename):
             continue
-        with zf.open(info, "r") as src:
-            sidecars.append(src.read())
-    return sidecars
+        _stage_member(zf, info, stage_dir)
+        staged += 1
+    return staged
 
 
 def _ensure_within_root(target: Path, root: Path, name: str):
