@@ -96,7 +96,8 @@ def metadata_candidate_names(name: str) -> list[str]:
         filename = os.path.basename(candidate)
 
         if filename.endswith(".json"):
-            variants.append(os.path.join(dirname, f"{filename[:-5]}(1).json") if dirname else f"{filename[:-5]}(1).json"))
+            variant = os.path.join(dirname, f"{filename[:-5]}(1).json") if dirname else f"{filename[:-5]}(1).json"
+            variants.append(variant)
 
     seen = set()
     uniq: list[str] = []
