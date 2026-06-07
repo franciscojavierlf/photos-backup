@@ -3,37 +3,37 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Iterable
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from lib.config import TEMP_ROOT, MEDIA_EXT, DATA_DIR, ARCHIVE_SUFFIXES, MAX_ARCHIVE_WORKERS, MAX_WITHIN_ARCHIVE_WORKERS, PARALLEL_MIN_FILES
+
+from lib.config import ARCHIVE_SUFFIXES, DATA_DIR, DB_PATH, MEDIA_EXT, TEMP_ROOT
+import lib.sorter as sorter
 
 _COPY_CHUNK = 8 * 1024 * 1024  # 8 MB chunk for faster extraction I/O
 
+
 def _is_media(name: str) -> bool:
-    lower = name.lower()
-    _, ext = os.path.splitext(lower)
+    _, ext = os.path.splitext(name.lower())
     return ext in MEDIA_EXT
 
 
 def _is_sidecar_json(name: str) -> bool:
     lower = name.lower()
-    if not lower.endswith('.json'):
+    if not lower.endswith(".json"):
         return False
+
     base = os.path.basename(lower)
-    # Skip typical folder/album-level metadata files which we don't need
-    if base in {'metadata.json', 'metadata(1).json', 'album-metadata.json', 'album-metadata(1).json', 'albums.json'}:
+    if base in {"metadata.json", "metadata(1).json", "album-metadata.json", "album-metadata(1).json", "albums.json"}:
         return False
-    if base.startswith(('metadata', 'album', 'albums', 'shared', 'archive', 'index', 'folder', 'photos-metadata')):
+    if base.startswith(("metadata", "album", "albums", "shared", "archive", "index", "folder", "photos-metadata")):
         return False
-    # Allow strong sidecar patterns
-    if base.endswith(('.supplemental-metadata.json', '.suppl.json')):
+    if base.endswith((".supplemental-metadata.json", ".suppl.json")):
         return True
-    # Allow *.ext.json or *.ext(1).json forms
+
     for mext in MEDIA_EXT:
-        if base.endswith(mext + '.json') or base.endswith(mext + '(1).json'):
+        if base.endswith(mext + ".json") or base.endswith(mext + "(1).json"):
             return True
-    # Fallback: keep other JSONs (e.g., filename.json sidecar) to preserve date metadata
+
     return True
+
 
 def extract_zip_files():
     archives = [p for p in DATA_DIR.iterdir() if p.is_file() and p.name.lower().endswith(ARCHIVE_SUFFIXES)]
@@ -43,170 +43,117 @@ def extract_zip_files():
         logging.info("No archives found.")
         return
 
-    logging.info(f"Found {len(archives)} archives")
-    ok, fail = 0, 0
-    # Extract multiple archives in parallel (bounded workers)
-    max_workers = min(len(archives), MAX_ARCHIVE_WORKERS)
-    if max_workers <= 1:
-        for arc in archives:
-            if _extract_one_archive(arc):
+    conn = sorter.ensure_db(DB_PATH)
+    try:
+        logging.info(f"Found {len(archives)} archives")
+        ok, fail = 0, 0
+        for archive in archives:
+            if _extract_one_archive(conn, archive):
                 ok += 1
             else:
                 fail += 1
-    else:
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = {ex.submit(_extract_one_archive, arc): arc for arc in archives}
-            for fut in as_completed(futs):
-                try:
-                    if fut.result():
-                        ok += 1
-                    else:
-                        fail += 1
-                except Exception:
-                    fail += 1
-    logging.info(f"[SUMMARY] extracted_ok={ok} extracted_failed={fail}")
+        logging.info(f"[SUMMARY] extracted_ok={ok} extracted_failed={fail}")
+    finally:
+        conn.close()
 
 
-def _extract_one_archive(archive: Path) -> bool:
-    out_dir = _extract_dir_for(archive)
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _extract_one_archive(conn, archive: Path) -> bool:
+    if not archive.name.lower().endswith(".zip"):
+        logging.error(f"Unsupported archive type: {archive.name}")
+        return False
 
-    wrote = 0
-    wrote_media = 0
-    wrote_sidecar = 0
-    skipped_existing = 0
+    stage_dir = _extract_dir_for(archive)
+    _reset_stage_dir(stage_dir)
+
+    added = 0
+    dupes = 0
+    errors = 0
     skipped_noise_json = 0
-    try:
-        if archive.name.lower().endswith(".zip"):
-            # Precompute destination root once for traversal checks
-            dest_root = str(out_dir.resolve())
-            with zipfile.ZipFile(archive, "r") as zf:
-                all_infos = [zi for zi in zf.infolist() if not zi.is_dir()]
-                infos = [zi for zi in all_infos if _is_media_or_sidecar(zi.filename)]
-                # Count JSONs we intentionally skip as noise
-                skipped_noise_json = sum(1 for zi in all_infos if zi.filename.lower().endswith('.json') and not _is_sidecar_json(zi.filename))
-            # Parallelize extraction of members using multiple ZipFile handles
-            workers = min(MAX_WITHIN_ARCHIVE_WORKERS, len(infos))
-            if workers <= 1 or len(infos) < PARALLEL_MIN_FILES:
-                # Small archives: do sequential to avoid overhead
-                with zipfile.ZipFile(archive, "r") as zf2:
-                    wrote, wrote_media, wrote_sidecar, skipped_existing = _safe_extract_zip_resumable(zf2, out_dir, infos, dest_root)
-            else:
-                # Use filenames only to avoid sharing ZipInfo objects across threads
-                names = [zi.filename for zi in infos]
-                wrote, wrote_media, wrote_sidecar, skipped_existing = _extract_members_parallel(archive, out_dir, names, dest_root, workers)
-        else:
-            logging.error(f"File is not zip: {archive.name}")
 
-        # If at least one file was written, consider extraction successful and delete archive
-        if wrote > 0:
+    try:
+        with zipfile.ZipFile(archive, "r") as zf:
+            info_by_name = {zi.filename: zi for zi in zf.infolist() if not zi.is_dir()}
+            media_infos = [zi for zi in info_by_name.values() if _is_media(zi.filename)]
+            skipped_noise_json = sum(
+                1 for name in info_by_name if name.lower().endswith(".json") and not _is_sidecar_json(name)
+            )
+
+            if not media_infos:
+                logging.warning(f"[WARN] nothing extracted from {archive.name} (no media found)")
+                return False
+
+            for info in media_infos:
+                try:
+                    staged_media = _stage_member(zf, info, stage_dir)
+                    sidecar_bytes = _read_sidecar_bytes(zf, info.filename, info_by_name)
+                    result = sorter.import_media_file(conn, staged_media, sidecar_bytes=sidecar_bytes)
+                    if result == "added":
+                        added += 1
+                    elif result == "duplicate":
+                        dupes += 1
+                except Exception as e:
+                    logging.warning(f"[ERR] import fail {info.filename}: {e}")
+                    errors += 1
+
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        if errors == 0:
             archive.unlink(missing_ok=False)
-            logging.info(f"[OK] wrote_new={wrote} | media={wrote_media} sidecars={wrote_sidecar} skipped_existing={skipped_existing} skipped_noise_json={skipped_noise_json} | deleted archive: {archive.name}")
+            logging.info(
+                f"[OK] added={added} dupes={dupes} errors={errors} "
+                f"skipped_noise_json={skipped_noise_json} | deleted archive: {archive.name}"
+            )
             return True
-        else:
-            logging.warning(f"[WARN] nothing extracted from {archive.name} (no media/sidecars found)")
-            return False
+
+        logging.warning(
+            f"[WARN] added={added} dupes={dupes} errors={errors} "
+            f"skipped_noise_json={skipped_noise_json} | kept archive for rerun: {archive.name}"
+        )
+        return False
     except Exception as e:
         logging.warning(f"[ERR] extraction failed for {archive.name}: {e}")
         return False
+    finally:
+        try:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
-def _is_media_or_sidecar(name: str) -> bool:
-    if _is_media(name):
-        return True
-    if _is_sidecar_json(name):
-        return True
-    return False
-
-
-def _extract_dir_for(arc: Path) -> Path:
-    safe = arc.name.replace('.', '_')
+def _extract_dir_for(archive: Path) -> Path:
+    safe = archive.name.replace(".", "_")
     return TEMP_ROOT / f"extract_{safe}"
 
 
-def _safe_extract_zip_resumable(zf: zipfile.ZipFile, dest_dir: Path, names: Iterable[zipfile.ZipInfo], dest_root: str) -> tuple[int, int, int, int]:
-    wrote = 0
-    wrote_media = 0
-    wrote_sidecar = 0
-    skipped_existing = 0
-    for info in names:
-        if info.is_dir():
+def _reset_stage_dir(stage_dir: Path):
+    shutil.rmtree(stage_dir, ignore_errors=True)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _stage_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, stage_dir: Path) -> Path:
+    target = stage_dir / os.path.normpath(info.filename)
+    _ensure_within_root(target, stage_dir, info.filename)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    logging.info(f"Extracting {info.filename}")
+    with zf.open(info, "r") as src, target.open("wb") as dst:
+        shutil.copyfileobj(src, dst, length=_COPY_CHUNK)
+    return target
+
+
+def _read_sidecar_bytes(zf: zipfile.ZipFile, media_name: str, info_by_name: dict[str, zipfile.ZipInfo]) -> bytes | None:
+    for candidate in sorter.metadata_candidate_names(media_name):
+        info = info_by_name.get(candidate)
+        if info is None:
             continue
-        name = info.filename
-        if not _is_media_or_sidecar(name):
+        if not _is_sidecar_json(info.filename):
             continue
-        target = dest_dir / os.path.normpath(name)
-        # Ensure the resolved path stays under the destination root (zip-slip protection)
-        if not str(target.resolve()).startswith(dest_root):
-            logging.warning(f"[zip] skip suspicious path: {name}")
-            continue
-        if target.exists():
-            skipped_existing += 1
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        logging.info(f"Extracting {info.filename}")
-        with zf.open(info, "r") as src, target.open("wb") as dst:
-            shutil.copyfileobj(src, dst, length=_COPY_CHUNK)
-        wrote += 1
-        if _is_media(name):
-            wrote_media += 1
-        elif _is_sidecar_json(name):
-            wrote_sidecar += 1
-    return wrote, wrote_media, wrote_sidecar, skipped_existing
+        with zf.open(info, "r") as src:
+            return src.read()
+    return None
 
 
-def _extract_members_parallel(archive: Path, dest_dir: Path, names: list[str], dest_root: str, workers: int) -> tuple[int, int, int, int]:
-    """
-    Extract a list of member names from one zip archive in parallel.
-    Each worker opens its own ZipFile handle and processes a disjoint subset.
-    Returns a tuple: (wrote_total, wrote_media, wrote_sidecar, skipped_existing).
-    """
-    def _worker(sublist: list[str]) -> tuple[int, int, int, int]:
-        wrote_local = 0
-        wrote_media_local = 0
-        wrote_sidecar_local = 0
-        skipped_existing_local = 0
-        with zipfile.ZipFile(archive, "r") as zf:
-            for name in sublist:
-                try:
-                    info = zf.getinfo(name)
-                except KeyError:
-                    continue
-                target = dest_dir / os.path.normpath(name)
-                # Zip-slip protection
-                if not str(target.resolve()).startswith(dest_root):
-                    logging.warning(f"[zip] skip suspicious path: {name}")
-                    continue
-                if target.exists():
-                    skipped_existing_local += 1
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                logging.info(f"Extracting {info.filename}")
-                with zf.open(info, "r") as src, target.open("wb") as dst:
-                    shutil.copyfileobj(src, dst, length=_COPY_CHUNK)
-                wrote_local += 1
-                if _is_media(name):
-                    wrote_media_local += 1
-                elif _is_sidecar_json(name):
-                    wrote_sidecar_local += 1
-        return wrote_local, wrote_media_local, wrote_sidecar_local, skipped_existing_local
-
-    if workers <= 1:
-        return _worker(names)
-
-    # Split names into roughly equal chunks for workers
-    chunks: list[list[str]] = [[] for _ in range(workers)]
-    for i, n in enumerate(names):
-        chunks[i % workers].append(n)
-
-    wrote = 0
-    wrote_media = 0
-    wrote_sidecar = 0
-    skipped_existing = 0
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        for w, wm, ws, se in ex.map(_worker, chunks):
-            wrote += w
-            wrote_media += wm
-            wrote_sidecar += ws
-            skipped_existing += se
-    return wrote, wrote_media, wrote_sidecar, skipped_existing
+def _ensure_within_root(target: Path, root: Path, name: str):
+    target_abs = target.resolve()
+    root_abs = root.resolve()
+    if os.path.commonpath([str(target_abs), str(root_abs)]) != str(root_abs):
+        raise ValueError(f"[zip] skip suspicious path: {name}")

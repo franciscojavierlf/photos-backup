@@ -6,7 +6,7 @@ import lib.extractor as extractor
 import lib.sorter as sorter
 
 
-def init():
+def _init():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -14,12 +14,11 @@ def init():
     logger.setup_logging()
 
 
-def cmd_extract(args):
+def _cmd_extract(args):
     extractor.extract_zip_files()
-    sorter.sort_media()
 
 
-def cmd_reindex(args):
+def _cmd_reindex(args):
     sorter.reindex_library()
 
 
@@ -28,14 +27,12 @@ if __name__ == "__main__":
     subparsers = ap.add_subparsers(dest="command", required=True)
 
     extract_parser = subparsers.add_parser("extract", help="Extract ZIP files and sort media.")
-    extract_parser.set_defaults(func=cmd_extract)
+    extract_parser.set_defaults(func=_cmd_extract)
 
     reindex_parser = subparsers.add_parser("reindex", help="Scan photos/ and rebuild DB entries.")
-    reindex_parser.set_defaults(func=cmd_reindex)
+    reindex_parser.set_defaults(func=_cmd_reindex)
 
     args = ap.parse_args()
 
-    init()
+    _init()
     args.func(args)
-
-print("asdf")
