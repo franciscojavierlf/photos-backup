@@ -72,6 +72,7 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
     pending_media: dict[str, Path] = {}
     pending_media_candidates: dict[str, str] = {}
     pending_sidecars: dict[str, Path] = {}
+    duplicate_media_candidates: set[str] = set()
 
     wrote = 0
     wrote_media = 0
@@ -108,10 +109,26 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
                 wrote += 1
                 if _is_media(info.filename):
                     wrote_media += 1
-                    result = _register_media(conn, target, rel_name, pending_media, pending_media_candidates, pending_sidecars)
+                    result = _register_media(
+                        conn,
+                        target,
+                        rel_name,
+                        pending_media,
+                        pending_media_candidates,
+                        pending_sidecars,
+                        duplicate_media_candidates,
+                    )
                 else:
                     wrote_sidecar += 1
-                    result = _register_sidecar(conn, target, rel_name, pending_media, pending_media_candidates, pending_sidecars)
+                    result = _register_sidecar(
+                        conn,
+                        target,
+                        rel_name,
+                        pending_media,
+                        pending_media_candidates,
+                        pending_sidecars,
+                        duplicate_media_candidates,
+                    )
 
                 if result == "added":
                     added += 1
@@ -172,7 +189,26 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
             pass
 
 
-def _register_media(conn, media_path: Path, rel_name: str, pending_media: dict[str, Path], pending_media_candidates: dict[str, str], pending_sidecars: dict[str, Path]) -> str | None:
+def _register_media(
+    conn,
+    media_path: Path,
+    rel_name: str,
+    pending_media: dict[str, Path],
+    pending_media_candidates: dict[str, str],
+    pending_sidecars: dict[str, Path],
+    duplicate_media_candidates: set[str],
+) -> str | None:
+    if sorter.is_known_duplicate(conn, media_path):
+        logging.info(f"[DUP-EARLY] media already in DB: {media_path.name}")
+        for candidate in sorter.metadata_candidate_names(rel_name):
+            duplicate_media_candidates.add(candidate)
+            sidecar_path = pending_sidecars.pop(candidate, None)
+            if sidecar_path is not None:
+                logging.info(f"[DUP-EARLY] discarding cached sidecar for duplicate media: {sidecar_path.name}")
+                sidecar_path.unlink(missing_ok=True)
+        sorter.discard_staged_media(media_path)
+        return "duplicate"
+
     for candidate in sorter.metadata_candidate_names(rel_name):
         sidecar_path = pending_sidecars.pop(candidate, None)
         if sidecar_path is None:
@@ -190,7 +226,20 @@ def _register_media(conn, media_path: Path, rel_name: str, pending_media: dict[s
     return None
 
 
-def _register_sidecar(conn, sidecar_path: Path, rel_name: str, pending_media: dict[str, Path], pending_media_candidates: dict[str, str], pending_sidecars: dict[str, Path]) -> str | None:
+def _register_sidecar(
+    conn,
+    sidecar_path: Path,
+    rel_name: str,
+    pending_media: dict[str, Path],
+    pending_media_candidates: dict[str, str],
+    pending_sidecars: dict[str, Path],
+    duplicate_media_candidates: set[str],
+) -> str | None:
+    if rel_name in duplicate_media_candidates:
+        logging.info(f"[DUP-EARLY] discarding sidecar for already-known duplicate media: {sidecar_path.name}")
+        sidecar_path.unlink(missing_ok=True)
+        return None
+
     media_key = pending_media_candidates.get(rel_name)
     if media_key is None:
         pending_sidecars[rel_name] = sidecar_path
