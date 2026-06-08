@@ -170,6 +170,16 @@ def import_media_file(
     return "added"
 
 
+def is_known_duplicate(conn: sqlite3.Connection, src: Path) -> bool:
+    h = _sha256_file(src)
+    cur = conn.execute("SELECT 1 FROM files WHERE hash=? LIMIT 1", (h,))
+    return cur.fetchone() is not None
+
+
+def discard_staged_media(src: Path, *, sidecar_path: Path | None = None):
+    _cleanup_staged_media(src, sidecar_path=sidecar_path)
+
+
 def _sha256_file(p: Path) -> str:
     h = hashlib.sha256()
     with p.open("rb") as f:
