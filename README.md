@@ -11,7 +11,7 @@ The script has multiple usages.
 Add the zip files into the `data` folder. Then run:
 
 ```sh
-python3 photos_backup.py extract
+python3 photos_backup.py import
 ```
 
 - Media with reliable dates (from Google sidecar JSON) are placed into `photos/YYYY/MM`.
@@ -25,6 +25,9 @@ For each zip file:
 
 1. Files are extracted incrementally into `data/.tmp_extracted/extract_<zip-name>`.
 2. Media files and their Google sidecar JSON files are matched in memory using the same filename rules as the sorter.
+   - Standard-name rule: `IMG_0010.JPG` matches JSON files that start with `IMG_0010.JPG` and end with `.json`.
+   - Duplicate-name rule: `IMG_0010(1).JPG` matches JSON files that start with `IMG_0010.JPG` and end with `(1).json`.
+   - The text between the media filename and `.json` can be anything, so truncated names like `.supplemental-metada.json` still match.
 3. When a media file and sidecar pair are both available, the media is imported immediately:
    - duplicates are deleted
    - dated files are moved into `photos/YYYY/MM`
@@ -38,6 +41,8 @@ This means the script no longer extracts every Takeout archive before sorting. P
 
 The extractor logs the pairing lifecycle so you can see what is happening:
 
+- `[ARCHIVE] 2/7 takeout-002.zip`
+- `[PROGRESS] takeout-002.zip 41.3% entries=812/1967 processing=Photos from 2024/IMG_1234.JPG`
 - `[CACHE] media waiting for sidecar: ...`
 - `[CACHE] sidecar waiting for media: ...`
 - `[MATCH] ... matched ...`
