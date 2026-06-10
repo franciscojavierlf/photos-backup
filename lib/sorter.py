@@ -42,32 +42,37 @@ def reindex_library():
         conn.execute("DELETE FROM files")
         conn.commit()
 
-        added, errors, processed_bytes = 0, 0, 0
+        added, errors, processed_bytes, duplicates = 0, 0, 0, 0
         batch: list[tuple[str, int, str, int]] = []
+        seen_hashes: set[str] = set()
         conn.execute("BEGIN IMMEDIATE")
         for p in _iter_media_files(PHOTOS_DIR):
             try:
                 h = _hash_file(p)
                 stat = p.stat()
+                if h in seen_hashes:
+                    duplicates += 1
+                else:
+                    seen_hashes.add(h)
                 batch.append((h, stat.st_size, str(p), int(stat.st_mtime)))
                 added += 1
                 processed_bytes += stat.st_size
 
                 if len(batch) >= _REINDEX_BATCH_SIZE:
-                    conn.executemany("INSERT INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
+                    conn.executemany("INSERT OR REPLACE INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
                     batch.clear()
 
                 if added % _REINDEX_LOG_EVERY == 0:
                     pct = 100.0 if total_bytes == 0 else (processed_bytes * 100.0 / total_bytes)
-                    logging.info(f"[REINDEX] {pct:.1f}% files={added}/{total_files}")
+                    logging.info(f"[REINDEX] {pct:.1f}% files={added}/{total_files} duplicates={duplicates}")
             except Exception as e:
                 logging.warning(f"[REINDEX] fail {p.name}: {e}")
                 errors += 1
 
         if batch:
-            conn.executemany("INSERT INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
+            conn.executemany("INSERT OR REPLACE INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
         conn.commit()
-        logging.info(f"[REINDEX] done. indexed={added}/{total_files} errors={errors}")
+        logging.info(f"[REINDEX] done. indexed={added}/{total_files} duplicates={duplicates} errors={errors}")
     finally:
         conn.close()
 
