@@ -47,13 +47,18 @@ def extract_zip_files():
         logging.info("No archives found.")
         return
 
+    logging.info("[SCAN] counting importable archive entries")
+    global_total_infos = _count_relevant_archive_entries(archives)
+    logging.info(f"[SCAN] total_entries={global_total_infos}")
+
     conn = sorter.ensure_db(DB_PATH)
     try:
         logging.info(f"Found {len(archives)} archives")
         ok, fail = 0, 0
+        global_state = {"processed": 0, "total": global_total_infos}
         for index, archive in enumerate(archives, start=1):
             logging.info(f"[ARCHIVE] {index}/{len(archives)} {archive.name}")
-            if _extract_and_import_one_archive(conn, archive):
+            if _extract_and_import_one_archive(conn, archive, global_state=global_state):
                 ok += 1
             else:
                 fail += 1
@@ -62,7 +67,7 @@ def extract_zip_files():
         conn.close()
 
 
-def _extract_and_import_one_archive(conn, archive: Path) -> bool:
+def _extract_and_import_one_archive(conn, archive: Path, *, global_state: dict[str, int] | None = None) -> bool:
     if not archive.name.lower().endswith(".zip"):
         logging.error(f"Unsupported archive type: {archive.name}")
         return False
@@ -100,11 +105,20 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
                 _ensure_within_root(target, dest_root, info.filename)
                 if target.exists():
                     skipped_existing += 1
-                    _log_archive_progress(archive.name, index, total_infos, target.name, skipped_existing=True)
+                    _bump_global_progress(global_state)
+                    _log_archive_progress(
+                        archive.name,
+                        index,
+                        total_infos,
+                        target.name,
+                        global_state=global_state,
+                        skipped_existing=True,
+                    )
                     continue
 
                 target.parent.mkdir(parents=True, exist_ok=True)
-                _log_archive_progress(archive.name, index, total_infos, info.filename)
+                _bump_global_progress(global_state)
+                _log_archive_progress(archive.name, index, total_infos, info.filename, global_state=global_state)
                 with zf.open(info, "r") as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst, length=_COPY_CHUNK)
 
@@ -263,10 +277,43 @@ def _unregister_media(rel_name: str, pending_media: dict[str, Path]):
     pending_media.pop(rel_name, None)
 
 
-def _log_archive_progress(archive_name: str, index: int, total: int, member_name: str, *, skipped_existing: bool = False):
+def _log_archive_progress(
+    archive_name: str,
+    index: int,
+    total: int,
+    member_name: str,
+    *,
+    global_state: dict[str, int] | None = None,
+    skipped_existing: bool = False,
+):
     pct = 100.0 if total == 0 else (index * 100.0 / total)
+    global_processed = 0 if global_state is None else global_state.get("processed", 0)
+    global_total = 0 if global_state is None else global_state.get("total", 0)
+    global_pct = 100.0 if global_total == 0 else (global_processed * 100.0 / global_total)
     status = "skip-existing" if skipped_existing else "processing"
-    logging.info(f"[PROGRESS] {archive_name} {pct:.1f}% entries={index}/{total} {status}={member_name}")
+    logging.info(
+        f"[PROGRESS] {archive_name} zip={pct:.1f}% global={global_pct:.1f}% "
+        f"entries={index}/{total} total={global_processed}/{global_total} {status}={member_name}"
+    )
+
+
+def _count_relevant_archive_entries(archives: list[Path]) -> int:
+    total = 0
+    for archive in archives:
+        if not archive.name.lower().endswith(".zip"):
+            continue
+        try:
+            with zipfile.ZipFile(archive, "r") as zf:
+                total += sum(1 for zi in zf.infolist() if not zi.is_dir() and _is_media_or_sidecar(zi.filename))
+        except Exception as e:
+            logging.warning(f"[SCAN] failed counting {archive.name}: {e}")
+    return total
+
+
+def _bump_global_progress(global_state: dict[str, int] | None):
+    if global_state is None:
+        return
+    global_state["processed"] = global_state.get("processed", 0) + 1
 
 
 def _extract_dir_for(archive: Path) -> Path:
