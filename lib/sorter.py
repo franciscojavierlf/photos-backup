@@ -4,7 +4,7 @@ import logging
 import os
 import shutil
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from lib.config import DATA_DIR, DB_PATH, MEDIA_EXT, PHOTOS_DIR, TEMP_ROOT, UNDATED_DIR
@@ -18,6 +18,7 @@ def sort_media():
     """Import any leftover staged media from TEMP_ROOT."""
     conn = ensure_db(DB_PATH)
     try:
+        logging.info("[UNDATED] finalizing staged media from temp")
         _import_from_temp(conn, TEMP_ROOT, PHOTOS_DIR)
     finally:
         conn.close()
@@ -89,6 +90,16 @@ def ensure_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
       )
     """
     )
+    conn.execute(
+        """
+      CREATE TABLE IF NOT EXISTS discarded_media(
+        source_key TEXT NOT NULL,
+        folder_path TEXT NOT NULL,
+        media_name TEXT NOT NULL,
+        PRIMARY KEY(source_key, folder_path, media_name)
+      )
+    """
+    )
     conn.execute("PRAGMA journal_mode=WAL;")
     logging.info(f"DB ready at {db_path.name}")
     return conn
@@ -138,8 +149,11 @@ def import_media_file(
     sidecar_path: Path | None = None,
     sidecar_bytes: bytes | None = None,
     sidecar_bytes_candidates: list[bytes] | None = None,
-    lib_dir: Path = PHOTOS_DIR,
+    lib_dir: Path | None = None,
 ) -> str:
+    if lib_dir is None:
+        lib_dir = PHOTOS_DIR
+
     h = _hash_file(src)
     size_src = src.stat().st_size
     mtime_src = int(src.stat().st_mtime)
@@ -199,12 +213,35 @@ def discard_staged_media(src: Path, *, sidecar_path: Path | None = None):
     _cleanup_staged_media(src, sidecar_path=sidecar_path)
 
 
+def record_discarded_media(conn: sqlite3.Connection, source_key: str, media_rel_name: str):
+    folder_path, media_name = _split_rel_path(media_rel_name)
+    conn.execute(
+        "INSERT OR REPLACE INTO discarded_media(source_key,folder_path,media_name) VALUES(?,?,?)",
+        (source_key, folder_path, media_name),
+    )
+    conn.commit()
+
+
+def is_discarded_sidecar(conn: sqlite3.Connection, source_key: str, sidecar_rel_name: str) -> bool:
+    folder_path, sidecar_name = _split_rel_path(sidecar_rel_name)
+    rows = conn.execute(
+        "SELECT media_name FROM discarded_media WHERE source_key=? AND folder_path=?",
+        (source_key, folder_path),
+    ).fetchall()
+    return any(sidecar_matches_media_name(sidecar_name, media_name) for (media_name,) in rows)
+
+
 def _hash_file(p: Path) -> str:
     h = hashlib.md5(usedforsecurity=False)
     with p.open("rb") as f:
         for chunk in iter(lambda: f.read(_HASH_CHUNK), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _split_rel_path(rel_name: str) -> tuple[str, str]:
+    norm = os.path.normpath(rel_name)
+    return os.path.dirname(norm), os.path.basename(norm)
 
 
 def _iter_media_files(root: Path):
@@ -247,7 +284,7 @@ def _load_takeout_timestamp_bytes(data: bytes):
             if not ts and "timestamp" in j:
                 ts = j["timestamp"]
         if ts:
-            return datetime.utcfromtimestamp(int(ts))
+            return datetime.fromtimestamp(int(ts), UTC).replace(tzinfo=None)
     except Exception:
         pass
     return None
