@@ -94,42 +94,41 @@ def ensure_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
-def metadata_candidate_names(name: str) -> list[str]:
-    parent = os.path.dirname(name)
-    base = os.path.basename(name)
-    stem, _ = os.path.splitext(base)
+def sidecar_matches_media_name(sidecar_name: str, media_name: str) -> bool:
+    sidecar_base = os.path.basename(sidecar_name)
+    media_base = os.path.basename(media_name)
+    sidecar_lower = sidecar_base.lower()
 
-    def _join(filename: str) -> str:
-        return os.path.join(parent, filename) if parent else filename
+    if not sidecar_lower.endswith(".json"):
+        return False
 
-    base_candidates = [
-        _join(base + ".json"),
-        _join(stem + ".json"),
-        _join(base + ".supplemental-metadata.json"),
-        _join(base + ".suppl.json"),
-    ]
+    duplicate_parts = _split_duplicate_suffix(media_base)
+    if duplicate_parts is None:
+        return sidecar_base.startswith(media_base)
 
-    variants: list[str] = []
-    for candidate in base_candidates:
-        variants.append(candidate)
-        dirname = os.path.dirname(candidate)
-        filename = os.path.basename(candidate)
-
-        if filename.endswith(".json"):
-            variant = os.path.join(dirname, f"{filename[:-5]}(1).json") if dirname else f"{filename[:-5]}(1).json"
-            variants.append(variant)
-
-    seen = set()
-    uniq: list[str] = []
-    for candidate in variants:
-        if candidate not in seen:
-            seen.add(candidate)
-            uniq.append(candidate)
-    return uniq
+    base_name, duplicate_suffix = duplicate_parts
+    return sidecar_base.startswith(base_name) and sidecar_lower.endswith(f"{duplicate_suffix.lower()}.json")
 
 
-def _metadata_candidates_for_path(p: Path) -> list[Path]:
-    return [p.parent / os.path.basename(candidate) for candidate in metadata_candidate_names(p.name)]
+def sidecar_matches_media_path(sidecar_name: str, media_name: str) -> bool:
+    sidecar_parent = os.path.dirname(os.path.normpath(sidecar_name))
+    media_parent = os.path.dirname(os.path.normpath(media_name))
+    if sidecar_parent != media_parent:
+        return False
+    return sidecar_matches_media_name(os.path.basename(sidecar_name), os.path.basename(media_name))
+
+
+def _matching_sidecars_for_path(p: Path) -> list[Path]:
+    matches: list[Path] = []
+    try:
+        for candidate in p.parent.iterdir():
+            if not candidate.is_file():
+                continue
+            if sidecar_matches_media_name(candidate.name, p.name):
+                matches.append(candidate)
+    except FileNotFoundError:
+        return []
+    return matches
 
 
 def import_media_file(
@@ -284,7 +283,7 @@ def _best_datetime_for_file(
         if dt:
             return dt, True
 
-    for sc in _metadata_candidates_for_path(p):
+    for sc in _matching_sidecars_for_path(p):
         if sidecar_path is not None and sc == sidecar_path:
             continue
         if sc.exists():
@@ -305,13 +304,29 @@ def _cleanup_staged_media(src: Path, *, sidecar_path: Path | None = None):
     try:
         if sidecar_path is not None and sidecar_path.exists():
             sidecar_path.unlink(missing_ok=True)
-        for sc in _metadata_candidates_for_path(src):
+        for sc in _matching_sidecars_for_path(src):
             if sc.exists():
                 sc.unlink(missing_ok=True)
         src.unlink(missing_ok=True)
         logging.info(f"[DUP] deleted temp duplicate: {src.name}")
     except Exception as e:
         logging.warning(f"[DUP] failed to delete temp duplicate {src.name}: {e}")
+
+
+def _split_duplicate_suffix(name: str) -> tuple[str, str] | None:
+    stem, ext = os.path.splitext(name)
+    if not ext:
+        return None
+
+    open_paren = stem.rfind("(")
+    if open_paren == -1 or not stem.endswith(")"):
+        return None
+
+    duplicate_num = stem[open_paren + 1 : -1]
+    if not duplicate_num.isdigit():
+        return None
+
+    return f"{stem[:open_paren]}{ext}", f"({duplicate_num})"
 
 
 def _prune_empty_dirs(root: Path) -> int:
