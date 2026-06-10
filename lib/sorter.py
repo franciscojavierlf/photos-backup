@@ -10,6 +10,8 @@ from pathlib import Path
 from lib.config import DATA_DIR, DB_PATH, MEDIA_EXT, PHOTOS_DIR, TEMP_ROOT, UNDATED_DIR
 
 _HASH_CHUNK = 8 * 1024 * 1024  # 8 MB for faster hashing on large files
+_REINDEX_BATCH_SIZE = 1000
+_REINDEX_LOG_EVERY = 1000
 
 
 def sort_media():
@@ -33,24 +35,32 @@ def reindex_library():
     conn = ensure_db(DB_PATH)
     try:
         logging.info(f"[REINDEX] scanning {PHOTOS_DIR.name}")
+        conn.execute("PRAGMA synchronous=OFF;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("DELETE FROM files")
+
         added, errors = 0, 0
-        for p in PHOTOS_DIR.rglob("*"):
-            if not p.is_file():
-                continue
-            if p.suffix.lower() not in MEDIA_EXT:
-                continue
+        batch: list[tuple[str, int, str, int]] = []
+        conn.execute("BEGIN")
+        for p in _iter_media_files(PHOTOS_DIR):
             try:
-                h = _sha256_file(p)
-                size = p.stat().st_size
-                mtime = int(p.stat().st_mtime)
-                conn.execute(
-                    "INSERT OR REPLACE INTO files(hash,size,path,mtime) VALUES(?,?,?,?)",
-                    (h, size, str(p), mtime),
-                )
+                h = _hash_file(p)
+                stat = p.stat()
+                batch.append((h, stat.st_size, str(p), int(stat.st_mtime)))
                 added += 1
+
+                if len(batch) >= _REINDEX_BATCH_SIZE:
+                    conn.executemany("INSERT INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
+                    batch.clear()
+
+                if added % _REINDEX_LOG_EVERY == 0:
+                    logging.info(f"[REINDEX] indexed={added} errors={errors}")
             except Exception as e:
                 logging.warning(f"[REINDEX] fail {p.name}: {e}")
                 errors += 1
+
+        if batch:
+            conn.executemany("INSERT INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
         conn.commit()
         logging.info(f"[REINDEX] done. indexed={added} errors={errors}")
     finally:
@@ -121,7 +131,7 @@ def import_media_file(
     sidecar_bytes_candidates: list[bytes] | None = None,
     lib_dir: Path = PHOTOS_DIR,
 ) -> str:
-    h = _sha256_file(src)
+    h = _hash_file(src)
     size_src = src.stat().st_size
     mtime_src = int(src.stat().st_mtime)
 
@@ -171,7 +181,7 @@ def import_media_file(
 
 
 def is_known_duplicate(conn: sqlite3.Connection, src: Path) -> bool:
-    h = _sha256_file(src)
+    h = _hash_file(src)
     cur = conn.execute("SELECT 1 FROM files WHERE hash=? LIMIT 1", (h,))
     return cur.fetchone() is not None
 
@@ -180,12 +190,20 @@ def discard_staged_media(src: Path, *, sidecar_path: Path | None = None):
     _cleanup_staged_media(src, sidecar_path=sidecar_path)
 
 
-def _sha256_file(p: Path) -> str:
-    h = hashlib.sha256()
+def _hash_file(p: Path) -> str:
+    h = hashlib.md5(usedforsecurity=False)
     with p.open("rb") as f:
         for chunk in iter(lambda: f.read(_HASH_CHUNK), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _iter_media_files(root: Path):
+    for dirpath, _, filenames in os.walk(root):
+        for filename in filenames:
+            if os.path.splitext(filename)[1].lower() not in MEDIA_EXT:
+                continue
+            yield Path(dirpath) / filename
 
 
 def _unique_dest(dest_dir: Path, name: str) -> Path:
