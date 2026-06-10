@@ -55,3 +55,5 @@ for some reason the photos directory was modified without running the script, yo
 ```sh
 python3 photos_backup.py reindex
 ```
+
+`reindex` now rebuilds the database in bulk and uses a faster MD5 content hash, so your first reindex after this change will rewrite every DB entry.
