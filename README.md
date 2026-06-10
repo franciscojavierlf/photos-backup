@@ -42,7 +42,7 @@ This means the script no longer extracts every Takeout archive before sorting. P
 The extractor logs the pairing lifecycle so you can see what is happening:
 
 - `[ARCHIVE] 2/7 takeout-002.zip`
-- `[PROGRESS] takeout-002.zip 41.3% entries=812/1967 processing=Photos from 2024/IMG_1234.JPG`
+- `[PROGRESS] takeout-002.zip zip=41.3% global=18.7% entries=812/1967 total=4231/22618 processing=Photos from 2024/IMG_1234.JPG`
 - `[CACHE] media waiting for sidecar: ...`
 - `[CACHE] sidecar waiting for media: ...`
 - `[MATCH] ... matched ...`
