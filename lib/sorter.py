@@ -34,10 +34,9 @@ def reindex_library():
     """Recreate the sqlite db from the current photos folder."""
     conn = ensure_db(DB_PATH)
     try:
+        logging.info(f"[REINDEX] scanning {PHOTOS_DIR.name}")
         total_files, total_bytes = _scan_media_totals(PHOTOS_DIR)
-        logging.info(
-            f"[REINDEX] scanning {PHOTOS_DIR.name} total_files={total_files} total_bytes={total_bytes}"
-        )
+        logging.info(f"[REINDEX] total_files={total_files}")
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.execute("DELETE FROM files")
@@ -60,9 +59,7 @@ def reindex_library():
 
                 if added % _REINDEX_LOG_EVERY == 0:
                     pct = 100.0 if total_bytes == 0 else (processed_bytes * 100.0 / total_bytes)
-                    logging.info(
-                        f"[REINDEX] {pct:.1f}% bytes={processed_bytes}/{total_bytes} files={added}/{total_files}"
-                    )
+                    logging.info(f"[REINDEX] {pct:.1f}% files={added}/{total_files}")
             except Exception as e:
                 logging.warning(f"[REINDEX] fail {p.name}: {e}")
                 errors += 1
@@ -70,9 +67,7 @@ def reindex_library():
         if batch:
             conn.executemany("INSERT INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
         conn.commit()
-        logging.info(
-            f"[REINDEX] done. indexed={added}/{total_files} bytes={processed_bytes}/{total_bytes} errors={errors}"
-        )
+        logging.info(f"[REINDEX] done. indexed={added}/{total_files} errors={errors}")
     finally:
         conn.close()
 
