@@ -14,7 +14,7 @@ def _init():
     logger.setup_logging()
 
 
-def _cmd_extract(args):
+def _cmd_import(args):
     extractor.extract_zip_files()
 
 
@@ -26,8 +26,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Photo library management.")
     subparsers = ap.add_subparsers(dest="command", required=True)
 
-    extract_parser = subparsers.add_parser("extract", help="Extract ZIP files and sort media.")
-    extract_parser.set_defaults(func=_cmd_extract)
+    import_parser = subparsers.add_parser("import", help="Import archives into the photo library.")
+    import_parser.set_defaults(func=_cmd_import)
 
     reindex_parser = subparsers.add_parser("reindex", help="Scan photos/ and rebuild DB entries.")
     reindex_parser.set_defaults(func=_cmd_reindex)
