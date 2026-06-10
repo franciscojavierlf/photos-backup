@@ -38,10 +38,11 @@ def reindex_library():
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.execute("DELETE FROM files")
+        conn.commit()
 
         added, errors = 0, 0
         batch: list[tuple[str, int, str, int]] = []
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         for p in _iter_media_files(PHOTOS_DIR):
             try:
                 h = _hash_file(p)
