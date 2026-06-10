@@ -34,13 +34,16 @@ def reindex_library():
     """Recreate the sqlite db from the current photos folder."""
     conn = ensure_db(DB_PATH)
     try:
-        logging.info(f"[REINDEX] scanning {PHOTOS_DIR.name}")
+        total_files, total_bytes = _scan_media_totals(PHOTOS_DIR)
+        logging.info(
+            f"[REINDEX] scanning {PHOTOS_DIR.name} total_files={total_files} total_bytes={total_bytes}"
+        )
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.execute("DELETE FROM files")
         conn.commit()
 
-        added, errors = 0, 0
+        added, errors, processed_bytes = 0, 0, 0
         batch: list[tuple[str, int, str, int]] = []
         conn.execute("BEGIN IMMEDIATE")
         for p in _iter_media_files(PHOTOS_DIR):
@@ -49,13 +52,17 @@ def reindex_library():
                 stat = p.stat()
                 batch.append((h, stat.st_size, str(p), int(stat.st_mtime)))
                 added += 1
+                processed_bytes += stat.st_size
 
                 if len(batch) >= _REINDEX_BATCH_SIZE:
                     conn.executemany("INSERT INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
                     batch.clear()
 
                 if added % _REINDEX_LOG_EVERY == 0:
-                    logging.info(f"[REINDEX] indexed={added} errors={errors}")
+                    pct = 100.0 if total_bytes == 0 else (processed_bytes * 100.0 / total_bytes)
+                    logging.info(
+                        f"[REINDEX] {pct:.1f}% bytes={processed_bytes}/{total_bytes} files={added}/{total_files}"
+                    )
             except Exception as e:
                 logging.warning(f"[REINDEX] fail {p.name}: {e}")
                 errors += 1
@@ -63,7 +70,9 @@ def reindex_library():
         if batch:
             conn.executemany("INSERT INTO files(hash,size,path,mtime) VALUES(?,?,?,?)", batch)
         conn.commit()
-        logging.info(f"[REINDEX] done. indexed={added} errors={errors}")
+        logging.info(
+            f"[REINDEX] done. indexed={added}/{total_files} bytes={processed_bytes}/{total_bytes} errors={errors}"
+        )
     finally:
         conn.close()
 
@@ -205,6 +214,18 @@ def _iter_media_files(root: Path):
             if os.path.splitext(filename)[1].lower() not in MEDIA_EXT:
                 continue
             yield Path(dirpath) / filename
+
+
+def _scan_media_totals(root: Path) -> tuple[int, int]:
+    total_files = 0
+    total_bytes = 0
+    for path in _iter_media_files(root):
+        try:
+            total_files += 1
+            total_bytes += path.stat().st_size
+        except Exception:
+            pass
+    return total_files, total_bytes
 
 
 def _unique_dest(dest_dir: Path, name: str) -> Path:
