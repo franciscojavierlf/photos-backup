@@ -51,7 +51,8 @@ def extract_zip_files():
     try:
         logging.info(f"Found {len(archives)} archives")
         ok, fail = 0, 0
-        for archive in archives:
+        for index, archive in enumerate(archives, start=1):
+            logging.info(f"[ARCHIVE] {index}/{len(archives)} {archive.name}")
             if _extract_and_import_one_archive(conn, archive):
                 ok += 1
             else:
@@ -70,9 +71,8 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
     _reset_stage_dir(stage_dir)
 
     pending_media: dict[str, Path] = {}
-    pending_media_candidates: dict[str, str] = {}
     pending_sidecars: dict[str, Path] = {}
-    duplicate_media_candidates: set[str] = set()
+    duplicate_media: set[str] = set()
 
     wrote = 0
     wrote_media = 0
@@ -88,21 +88,23 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
         with zipfile.ZipFile(archive, "r") as zf:
             all_infos = [zi for zi in zf.infolist() if not zi.is_dir()]
             infos = [zi for zi in all_infos if _is_media_or_sidecar(zi.filename)]
+            total_infos = len(infos)
             skipped_noise_json = sum(
                 1 for zi in all_infos if zi.filename.lower().endswith(".json") and not _is_sidecar_json(zi.filename)
             )
 
             dest_root = stage_dir.resolve()
-            for info in infos:
+            for index, info in enumerate(infos, start=1):
                 rel_name = os.path.normpath(info.filename)
                 target = stage_dir / rel_name
                 _ensure_within_root(target, dest_root, info.filename)
                 if target.exists():
                     skipped_existing += 1
+                    _log_archive_progress(archive.name, index, total_infos, target.name, skipped_existing=True)
                     continue
 
                 target.parent.mkdir(parents=True, exist_ok=True)
-                logging.info(f"Extracting {info.filename}")
+                _log_archive_progress(archive.name, index, total_infos, info.filename)
                 with zf.open(info, "r") as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst, length=_COPY_CHUNK)
 
@@ -114,9 +116,8 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
                         target,
                         rel_name,
                         pending_media,
-                        pending_media_candidates,
                         pending_sidecars,
-                        duplicate_media_candidates,
+                        duplicate_media,
                     )
                 else:
                     wrote_sidecar += 1
@@ -125,9 +126,8 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
                         target,
                         rel_name,
                         pending_media,
-                        pending_media_candidates,
                         pending_sidecars,
-                        duplicate_media_candidates,
+                        duplicate_media,
                     )
 
                 if result == "added":
@@ -149,7 +149,7 @@ def _extract_and_import_one_archive(conn, archive: Path) -> bool:
                     undated += 1
                 elif result == "duplicate":
                     dupes += 1
-                _unregister_media(rel_name, pending_media, pending_media_candidates)
+                _unregister_media(rel_name, pending_media)
             except Exception as e:
                 logging.warning(f"[ERR] finalize undated fail {media_path.name}: {e}")
                 errors += 1
@@ -194,25 +194,25 @@ def _register_media(
     media_path: Path,
     rel_name: str,
     pending_media: dict[str, Path],
-    pending_media_candidates: dict[str, str],
     pending_sidecars: dict[str, Path],
-    duplicate_media_candidates: set[str],
+    duplicate_media: set[str],
 ) -> str | None:
     if sorter.is_known_duplicate(conn, media_path):
         logging.info(f"[DUP-EARLY] media already in DB: {media_path.name}")
-        for candidate in sorter.metadata_candidate_names(rel_name):
-            duplicate_media_candidates.add(candidate)
-            sidecar_path = pending_sidecars.pop(candidate, None)
-            if sidecar_path is not None:
-                logging.info(f"[DUP-EARLY] discarding cached sidecar for duplicate media: {sidecar_path.name}")
-                sidecar_path.unlink(missing_ok=True)
+        duplicate_media.add(rel_name)
+        for sidecar_rel_name, sidecar_path in list(pending_sidecars.items()):
+            if not sorter.sidecar_matches_media_path(sidecar_rel_name, rel_name):
+                continue
+            logging.info(f"[DUP-EARLY] discarding cached sidecar for duplicate media: {sidecar_path.name}")
+            pending_sidecars.pop(sidecar_rel_name, None)
+            sidecar_path.unlink(missing_ok=True)
         sorter.discard_staged_media(media_path)
         return "duplicate"
 
-    for candidate in sorter.metadata_candidate_names(rel_name):
-        sidecar_path = pending_sidecars.pop(candidate, None)
-        if sidecar_path is None:
+    for sidecar_rel_name, sidecar_path in list(pending_sidecars.items()):
+        if not sorter.sidecar_matches_media_path(sidecar_rel_name, rel_name):
             continue
+        pending_sidecars.pop(sidecar_rel_name, None)
         try:
             logging.info(f"[MATCH] media {media_path.name} matched cached sidecar {sidecar_path.name}")
             return sorter.import_media_file(conn, media_path, sidecar_path=sidecar_path)
@@ -220,8 +220,6 @@ def _register_media(
             sidecar_path.unlink(missing_ok=True)
 
     pending_media[rel_name] = media_path
-    for candidate in sorter.metadata_candidate_names(rel_name):
-        pending_media_candidates[candidate] = rel_name
     logging.info(f"[CACHE] media waiting for sidecar: {media_path.name}")
     return None
 
@@ -231,23 +229,29 @@ def _register_sidecar(
     sidecar_path: Path,
     rel_name: str,
     pending_media: dict[str, Path],
-    pending_media_candidates: dict[str, str],
     pending_sidecars: dict[str, Path],
-    duplicate_media_candidates: set[str],
+    duplicate_media: set[str],
 ) -> str | None:
-    if rel_name in duplicate_media_candidates:
-        logging.info(f"[DUP-EARLY] discarding sidecar for already-known duplicate media: {sidecar_path.name}")
-        sidecar_path.unlink(missing_ok=True)
-        return None
+    for duplicate_media_rel in duplicate_media:
+        if sorter.sidecar_matches_media_path(rel_name, duplicate_media_rel):
+            logging.info(f"[DUP-EARLY] discarding sidecar for already-known duplicate media: {sidecar_path.name}")
+            sidecar_path.unlink(missing_ok=True)
+            return None
 
-    media_key = pending_media_candidates.get(rel_name)
-    if media_key is None:
+    media_key = None
+    media_path = None
+    for candidate_media_key, candidate_media_path in pending_media.items():
+        if sorter.sidecar_matches_media_path(rel_name, candidate_media_key):
+            media_key = candidate_media_key
+            media_path = candidate_media_path
+            break
+
+    if media_key is None or media_path is None:
         pending_sidecars[rel_name] = sidecar_path
         logging.info(f"[CACHE] sidecar waiting for media: {sidecar_path.name}")
         return None
 
-    media_path = pending_media[media_key]
-    _unregister_media(media_key, pending_media, pending_media_candidates)
+    _unregister_media(media_key, pending_media)
     try:
         logging.info(f"[MATCH] sidecar {sidecar_path.name} matched cached media {media_path.name}")
         return sorter.import_media_file(conn, media_path, sidecar_path=sidecar_path)
@@ -255,10 +259,14 @@ def _register_sidecar(
         sidecar_path.unlink(missing_ok=True)
 
 
-def _unregister_media(rel_name: str, pending_media: dict[str, Path], pending_media_candidates: dict[str, str]):
+def _unregister_media(rel_name: str, pending_media: dict[str, Path]):
     pending_media.pop(rel_name, None)
-    for candidate in sorter.metadata_candidate_names(rel_name):
-        pending_media_candidates.pop(candidate, None)
+
+
+def _log_archive_progress(archive_name: str, index: int, total: int, member_name: str, *, skipped_existing: bool = False):
+    pct = 100.0 if total == 0 else (index * 100.0 / total)
+    status = "skip-existing" if skipped_existing else "processing"
+    logging.info(f"[PROGRESS] {archive_name} {pct:.1f}% entries={index}/{total} {status}={member_name}")
 
 
 def _extract_dir_for(archive: Path) -> Path:
